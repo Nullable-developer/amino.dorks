@@ -1,6 +1,6 @@
 from time import time
-from asyncio import AbstractEventLoop
 from msgspec.json import encode, decode
+from asyncio import get_event_loop, AbstractEventLoop
 
 from typing import (
     List,
@@ -25,10 +25,10 @@ from ._utils import (
 
 from .models import (
     UserObject,
-    CommunitiesObject,
-    ThreadsObject,
     ThreadList,
-    MembersObject
+    MembersObject,
+    ThreadsObject,
+    CommunitiesObject
 )
 
 
@@ -63,6 +63,36 @@ class ADorksClient:
         self._trace_configs: Optional[List[TraceConfig]] = trace_configs
         self._session: Optional[ClientSession] = None
         self._user_object: Optional[UserObject] = None
+
+    def __repr__(self) -> str:
+        return(
+            f"<ADorksClient(device_id={self.device_id!r}), "
+            f"session_id={self.session_id!r}, proxy={self._proxy!r})>"
+        )
+    
+    def __hash__(self) -> int:
+        return hash((self.device_id, self.session_id)) 
+    
+    def __eq__(self, value: object) -> bool:
+        if not isinstance(value, ADorksClient):
+            return NotImplemented 
+        
+        return (self.device_id, self.session_id) == (value.device_id, value.session_id)
+
+    def __del__(self) -> None:
+        if self._session and not self._session.closed:
+            if self.loop.is_running():
+                self.loop.create_task(self._session.close()) 
+                return 
+            
+            self.loop.run_until_complete(self._session.close())
+
+    @property
+    def loop(self) -> AbstractEventLoop:
+        if not self._loop:
+            self._loop = get_event_loop()
+
+        return self._loop
 
     @property
     def device_id(self) -> str:
@@ -102,6 +132,10 @@ class ADorksClient:
             "audio": "audio/aac",
             "image": "image/jpg"
         }
+    
+    async def close_session(self):
+        if self._session and not self._session.closed:
+            await self._session.close() 
 
     async def _request(
             self, 
@@ -109,7 +143,7 @@ class ADorksClient:
             path: str, 
             headers: MutableMapping[str, str],
             data: Optional[bytes] = None,
-        ) -> Mapping:
+        ) -> str:
         if data:
             headers["NDC-MSG-SIG"] = generate_signature(data) 
             
@@ -165,16 +199,16 @@ class ADorksClient:
         response = await self._request("GET", f"/api/v1/g/s/chat/thread/{thread_id}/member?start=0&size=100&type=default&cv=1.2", headers=self.headers)
         return decode(response, type=MembersObject)
     
-    async def join_thread(self, thread_id: str) -> None:
+    async def join_thread(self, thread_id: str) -> str:
         headers = self.headers
         headers["Content-Type"] = "application/x-www-form-urlencoded"
-        await self._request("POST", f"/api/v1/g/s/chat/thread/{thread_id}/member/{self._user_object.auid}", headers=headers)
+        return await self._request("POST", f"/api/v1/g/s/chat/thread/{thread_id}/member/{self._user_object.auid}", headers=headers)
 
-    async def leave_thread(self, thread_id: str) -> None:
-        await self._request("DELETE", f"/api/v1/g/s/chat/thread/{thread_id}/member/{self._user_object.auid}", headers=self.headers)
+    async def leave_thread(self, thread_id: str) -> str:
+        return await self._request("DELETE", f"/api/v1/g/s/chat/thread/{thread_id}/member/{self._user_object.auid}", headers=self.headers)
 
-    async def invite_to_thread(self, thread_id: str, user_ids: List[str]) -> None:
-        await self._request(
+    async def invite_to_thread(self, thread_id: str, user_ids: List[str]) -> str:
+        return await self._request(
             method="POST",
             path=f"/api/v1/g/s/chat/thread/{thread_id}/member/invite",
             headers=self.headers,
